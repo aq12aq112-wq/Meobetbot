@@ -5,7 +5,7 @@ import random
 from aiogram import Bot, Dispatcher, Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-# اطلاعات پایه ربات، کارت و ادمین
+# اطلاعات پایه
 BOT_TOKEN = "8807018385:AAH0BJOhINR_TqpU0i_3b29QGWOlL5QUL2M"
 ADMIN_CARD = "760188800770"
 ADMIN_ID = 6937799221
@@ -19,8 +19,7 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
-                balance REAL DEFAULT 10000.0,
-                card TEXT DEFAULT ''
+                balance REAL DEFAULT 10000.0
             )
         """)
         await db.commit()
@@ -51,67 +50,86 @@ def parse_amount(val_str: str) -> float:
         return float(val_str.replace("k", "")) * 1000
     return float(val_str)
 
-# 1. دستورات عمومی و استارت
-@router.message(F.text.in_({"/start", "استارت"}))
-async def cmd_start(message: Message):
-    bal = await get_balance(message.from_user.id)
-    await message.reply(
-        f"🤖 **به ربات میوبت (MEOWBET) خوش آمدید!**\n\n"
-        f"💳 موجودی فعلی: `{bal:,.0f} میو`\n"
-        f"💳 شماره کارت شارژ: `{ADMIN_CARD}`\n\n"
-        f"📖 برای دیدن راهنما کلمه `راهنما` را ارسال کنید.",
-        parse_mode="Markdown"
-    )
-
-@router.message(F.text.in_({"راهنما", "/help", "❓ راهنما"}))
-async def cmd_help(message: Message):
-    text = (
-        "📖 **راهنمای جامع بازی‌های میوبت**\n\n"
-        "• موجودی: `موجودی`\n"
-        "• تاس: `#زوج [مبلغ]` یا `#فرد [مبلغ]` (سپس ۳ تاس بفرستید)\n"
-        "• پوپ: `#پوپ [مبلغ]` (۵ مرحله‌ای)\n"
-        "• شارژ حساب: واریز به کارت و ارسال فیش به ادمین\n"
-        "• انتقال: `#انتقال [مبلغ] [آیدی کاربر]`\n"
-        "• پنل ادمین: دستور `/admin` (مخصوص مدیریت)"
-    )
-    await message.reply(text, parse_mode="Markdown")
-
-@router.message(F.text.in_({"موجودی", "/balance"}))
-async def cmd_balance(message: Message):
-    bal = await get_balance(message.from_user.id)
-    await message.reply(f"💳 موجودی حساب شما: `{bal:,.0f} میو`", parse_mode="Markdown")
-
-# 2. پنل مدیریت
-@router.message(F.text == "/admin")
-async def admin_panel(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.reply("❌ شما دسترسی ادمین ندارید!")
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 آمار ربات", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="⚙️ مدیریت حساب‌ها", callback_data="admin_users")]
+# منوی اصلی شیشه‌ای
+def get_main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="👤 حساب کاربری و موجودی", callback_data="menu_profile")],
+        [
+            InlineKeyboardButton(text="💳 شارژ حساب", callback_data="menu_charge"),
+            InlineKeyboardButton(text="💵 برداشت وجه", callback_data="menu_withdraw")
+        ],
+        [
+            InlineKeyboardButton(text="🎲 بازی تاس (زوج/فرد)", callback_data="game_dice_info"),
+            InlineKeyboardButton(text="💩 بازی پوپ", callback_data="game_pop_info")
+        ],
+        [InlineKeyboardButton(text="📖 راهنمای کامل", callback_data="menu_help")]
     ])
-    await message.reply("👑 **خوش آمدید، مدیر عزیز!**\nلطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=markup, parse_mode="Markdown")
 
-@router.callback_query(F.data == "admin_stats")
-async def admin_stats_callback(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return await callback.answer("❌ غیرمجاز", show_alert=True)
-    
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT COUNT(*), SUM(balance) FROM users") as cursor:
-            row = await cursor.fetchone()
-            users_count = row[0]
-            total_balance = row[1] or 0
-
-    await callback.message.edit_text(
-        f"📊 **آمار کلی ربات میوبت:**\n\n"
-        f"👥 تعداد کل کاربران: `{users_count}` نفر\n"
-        f"💰 مجموع موجودی کاربران: `{total_balance:,.0f} میو`",
+# 1. دستور استارت با منوی شیشه‌ای
+@router.message(F.text.in_({"/start", "استارت", "منو"}))
+async def cmd_start(message: Message):
+    await message.reply(
+        "🤖 **به ربات شرط‌بندی و بازی میوبت (MEOWBET) خوش آمدید!**\n\n"
+        "لطفاً از طریق دکمه‌های زیر بخش مورد نظر خود را انتخاب کنید:",
+        reply_markup=get_main_menu(),
         parse_mode="Markdown"
     )
 
-# 3. بازی تاس دستی ۳ مرحله‌ای
+# هندلر دکمه‌های منوی شیشه‌ای
+@router.callback_query(F.data.startswith("menu_"))
+async def handle_menus(callback: CallbackQuery):
+    action = callback.data.split("_")[1]
+    user_id = callback.from_user.id
+    
+    if action == "profile":
+        bal = await get_balance(user_id)
+        text = f"👤 **حساب کاربری شما:**\n\n🆔 آیدی: `{user_id}`\n💳 موجودی: `{bal:,.0f} میو`"
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        
+    elif action == "charge":
+        text = (
+            f"💳 **شارژ حساب کاربری:**\n\n"
+            f"برای شارژ حساب، مبلغ مورد نظر را به شماره کارت زیر واریز کنید و عکس فیش یا رسید آن را به همراه آیدی خود برای ادمین بفرستید:\n\n"
+            f"📌 شماره کارت: `{ADMIN_CARD}`\n\n"
+            f"⚠️ پس از تایید ادمین، موجودی به حساب شما اضافه می‌شود."
+        )
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        
+    elif action == "withdraw":
+        text = "💵 **برداشت وجه:**\n\nبرای برداشت موجودی، شماره کارت بانکی خود را به همراه مقدار درخواست (مثلاً `#برداشت 50000`) برای ادمین ارسال کنید."
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        
+    elif action == "help":
+        text = (
+            "📖 **راهنمای جامع بازی‌های میوبت:**\n\n"
+            "• **تاس:** در گروه بنویسید `#زوج [مبلغ]` یا `#فرد [مبلغ]` و ۳ تاس بفرستید.\n"
+            "• **پوپ:** در گروه بنویسید `#پوپ [مبلغ]` و خانه‌ها را انتخاب کنید."
+        )
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        
+    elif action == "back":
+        await callback.message.edit_text(
+            "🤖 **به ربات میوبت (MEOWBET) خوش آمدید!**\n\nلطفاً از طریق دکمه‌های زیر بخش مورد نظر خود را انتخاب کنید:",
+            reply_markup=get_main_menu(),
+            parse_mode="Markdown"
+        )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("game_"))
+async def game_info(callback: CallbackQuery):
+    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+    await callback.message.edit_text(
+        "💡 برای اجرای بازی‌ها کافی است به **گروه متصل به ربات** بروید و دستورات مربوطه (مثل `#زوج 50k` یا `#پوپ 100k`) را ارسال کنید.",
+        reply_markup=markup,
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+# 2. بازی تاس دستی ۳ مرحله‌ای
 @router.message(F.text.regexp(r"^#(زوج|فرد)\s+(.+)$"))
 async def start_even_odd(message: Message):
     if message.chat.type == "private":
@@ -157,7 +175,7 @@ async def handle_dice(message: Message):
             await message.reply(f"🎲 تاس‌ها: `{rolls_str} = {total}`\n💥 **باختی!**", parse_mode="Markdown")
         del active_dice_games[user_id]
 
-# 4. بازی پوپ مرحله‌ای
+# 3. بازی پوپ مرحله‌ای
 @router.message(F.text.regexp(r"^(?:#)?پوپ\s+(.+)$"))
 async def ask_pop(message: Message):
     if message.chat.type == "private":
@@ -262,7 +280,7 @@ async def cash_pop(callback: CallbackQuery):
     await update_balance(owner_id, prize)
     await callback.message.edit_text(f"💵 برداشت موفق: `{prize:,.0f} میو`", parse_mode="Markdown")
 
-# راه اندازی اصلی
+# اجرای اصلی
 async def main():
     await init_db()
     bot = Bot(token=BOT_TOKEN)
@@ -270,7 +288,7 @@ async def main():
     dp.include_router(router)
 
     await bot.delete_webhook(drop_pending_updates=True)
-    print("🤖 MeowBot is up and running successfully with config!")
+    print("🤖 MeowBot with gorgeous Inline Menu is running!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
