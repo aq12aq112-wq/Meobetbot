@@ -4,6 +4,9 @@ from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKe
 from database import get_balance, update_balance
 
 router = Router()
+
+# دیکشنری برای مدیریت بازی‌های فعال تاس و پوپ کاربران
+active_dice_games = {}
 active_pop_games = {}
 
 def parse_amount(val_str: str) -> float:
@@ -13,9 +16,9 @@ def parse_amount(val_str: str) -> float:
         return num * 1000
     return float(val_str)
 
-# ==================== 1. بازی زوج و فرد (تاس) ====================
+# ==================== ۱. بازی تاس (۳ مرحله‌ای دستی) ====================
 @router.message(F.text.regexp(r"^#(زوج|فرد)\s+(.+)$"))
-async def play_even_odd(message: Message):
+async def start_even_odd(message: Message):
     if message.chat.type == "private":
         await message.reply("❌ این بازی فقط در گروه‌ها قابل اجراست!")
         return
@@ -34,57 +37,70 @@ async def play_even_odd(message: Message):
         await message.reply(f"❌ موجودی کافی نیست! موجودی: {balance:,.0f} میو")
         return
 
+    # کسر مبلغ از کاربر به صورت امانت تا پایان بازی
     await update_balance(user_id, -amount)
-    
-    dice_val = random.randint(1, 6)
-    is_even = dice_val % 2 == 0
-    user_won = (choice == "زوج" and is_even) or (choice == "فرد" and not is_even)
 
-    if user_won:
-        prize = amount * 1.95
-        await update_balance(user_id, prize)
-        await message.reply(f"🎲 تاس آمد: **{dice_val}** ({'زوج' if is_even else 'فرد'})\n🎉 **برنده شدی!** جایزه: `{prize:,.0f} میو`", parse_mode="Markdown")
-    else:
-        await message.reply(f"🎲 تاس آمد: **{dice_val}** ({'زوج' if is_even else 'فرد'})\n💥 **باختی!** مبلغ `{amount:,.0f} میو` سوخت شد.", parse_mode="Markdown")
+    # ثبت بازی فعال برای این کاربر
+    active_dice_games[user_id] = {
+        "choice": choice,
+        "amount": amount,
+        "rolls": []
+    }
 
+    await message.reply(
+        f"🎲 [{message.from_user.mention_html()}] عزیز، درخواست شما ثبت شد!\n"
+        f"لطفاً **۳ عدد تاس** 🎲 پشت سر هم بفرستید تا مجموع آن‌ها محاسبه شود.",
+        parse_mode="HTML"
+    )
 
-# ==================== 2. بازی سنگ کاغذ قیچی ====================
-@router.message(F.text.regexp(r"^#(سنگ|کاغذ|قیچی)\s+(.+)$"))
-async def play_rps(message: Message):
-    if message.chat.type == "private":
-        await message.reply("❌ این بازی فقط در گروه قابل اجراست!")
-        return
-
-    text_parts = message.text.replace("#", "").split()
-    user_choice = text_parts[0]
-    try:
-        amount = parse_amount(text_parts[1])
-    except ValueError:
-        await message.reply("⚠️ مبلغ معتبر نیست.")
-        return
-
+@router.message(F.dice)
+async def handle_user_dice(message: Message):
     user_id = message.from_user.id
-    balance = await get_balance(user_id)
-    if balance < amount:
-        await message.reply(f"❌ موجودی کافی نیست!")
+    if user_id not in active_dice_games:
+        return # اگر بازی تاس فعالی نداشت، کاری نداشته باش
+
+    # بررسی اینکه آیا کاربر تاس فرستاده است (مقدار dice وجود دارد)
+    if not message.dice:
         return
 
-    await update_balance(user_id, -amount)
-    choices = {"سنگ": "قیچی", "کاغذ": "سنگ", "قیچی": "کاغذ"}
-    bot_choice = random.choice(list(choices.keys()))
+    game = active_dice_games[user_id]
+    dice_value = message.dice.value
+    game["rolls"].append(dice_value)
 
-    if user_choice == bot_choice:
-        await update_balance(user_id, amount)
-        await message.reply(f"✌️ مساوی شدید! ربات `{bot_choice}` آورد. پولت برگشت.", parse_mode="Markdown")
-    elif choices[user_choice] == bot_choice:
-        prize = amount * 1.9
-        await update_balance(user_id, prize)
-        await message.reply(f"✌️ ربات `{bot_choice}` آورد.\n🎉 **برنده شدی!** جایزه: `{prize:,.0f} میو`", parse_mode="Markdown")
+    current_roll_count = len(game["rolls"])
+
+    if current_roll_count < 3:
+        await message.reply(f"🎲 تاس شماره {current_roll_count} ثبت شد (`{dice_value}`). {3 - current_roll_count} تاس دیگر بفرستید.", parse_mode="Markdown")
     else:
-        await message.reply(f"✌️ ربات `{bot_choice}` آورد.\n💥 **باختی!**", parse_mode="Markdown")
+        # ۳ تاس کامل شد
+        total_sum = sum(game["rolls"])
+        is_even = total_sum % 2 == 0
+        user_choice = game["choice"]
+        amount = game["amount"]
+
+        user_won = (user_choice == "زوج" and is_even) or (user_choice == "فرد" and not is_even)
+        rolls_str = " + ".join(map(str, game["rolls"]))
+
+        if user_won:
+            prize = amount * 1.95
+            await update_balance(user_id, prize)
+            await message.reply(
+                f"🎲 تاس‌ها: `{rolls_str} = {total_sum}` ({'زوج' if is_even else 'فرد'})\n"
+                f"🎉 **تبریک می‌گم بردید!**\nمبلغ `{prize:,.0f} میو` به موجودی شما اضافه شد.",
+                parse_mode="Markdown"
+            )
+        else:
+            await message.reply(
+                f"🎲 تاس‌ها: `{rolls_str} = {total_sum}` ({'زوج' if is_even else 'فرد'})\n"
+                f"💥 **باختی!** مبلغ `{amount:,.0f} میو` سوخت شد.",
+                parse_mode="Markdown"
+            )
+
+        # پاک کردن بازی از لیست فعال‌ها
+        del active_dice_games[user_id]
 
 
-# ==================== 3. بازی پوپ (۵ مرحله‌ای با نمایش کامل ردیف) ====================
+# ==================== ۲. بازی پوپ (پپ‌های استاندارد ۱، ۱، ۲، ۲، ۳) ====================
 @router.message(F.text.regexp(r"^(?:#)?پوپ\s+(.+)$"))
 async def ask_pop_confirmation(message: Message):
     if message.chat.type == "private":
@@ -136,11 +152,25 @@ async def start_pop(callback: CallbackQuery):
 
     await update_balance(owner_id, -amount)
 
+    # ساختار دقیق پپ‌ها برای ۵ ردیف:
+    # ردیف ۱: 1 پوپ (3 امن)
+    # ردیف ۲: 1 پوپ (3 امن)
+    # ردیف ۳: 2 پوپ (2 امن)
+    # ردیف ۴: 2 پوپ (2 امن)
+    # ردیف ۵: 3 پوپ (1 امن)
+    stages_config = [
+        [0, 0, 0, 1],
+        [0, 0, 0, 1],
+        [0, 0, 1, 1],
+        [0, 0, 1, 1],
+        [0, 1, 1, 1]
+    ]
+    
     stages = []
-    for _ in range(5):
-        row = [0, 0, 0, 1] # سه خانه امن (0) و یک پوپ (1)
-        random.shuffle(row)
-        stages.append(row)
+    for row in stages_config:
+        r = row.copy()
+        random.shuffle(r)
+        stages.append(r)
 
     active_pop_games[owner_id] = {
         "bet": amount,
@@ -148,7 +178,7 @@ async def start_pop(callback: CallbackQuery):
         "stages": stages,
         "multipliers": [1.2, 1.5, 2.0, 3.0, 4.0],
         "history": ["⚪", "⚪", "⚪", "⚪", "⚪"],
-        "revealed_rows": {} # ذخیره کردن ردیف‌های باز شده برای نمایش کامل
+        "revealed_rows": {}
     }
     await render_pop(callback.message, owner_id, is_edit=True)
     await callback.answer("بازی شروع شد!")
@@ -176,15 +206,12 @@ async def render_pop(message: Message, user_id: int, is_edit=False):
         row_btns = []
         for c in range(4):
             if r in game["revealed_rows"]:
-                # اگر این ردیف قبلاً بازی شده، تمام محتویاتش (پوپ و امن) رو نشون بده
                 val = game["revealed_rows"][r][c]
                 icon = "💩" if val == 1 else "🟢"
                 row_btns.append(InlineKeyboardButton(text=icon, callback_data="pop_passed"))
             elif r == stage:
-                # ردیف فعال فعلی
                 row_btns.append(InlineKeyboardButton(text="⚪", callback_data=f"pop_click_{user_id}_{r}_{c}"))
             else:
-                # ردیف‌های قفل‌شده آینده
                 row_btns.append(InlineKeyboardButton(text="🔒", callback_data="pop_locked"))
         keyboard.append(row_btns)
 
@@ -214,13 +241,12 @@ async def click_pop(callback: CallbackQuery):
         return
 
     row_data = game["stages"][stg]
-    game["revealed_rows"][stg] = row_data # ثبت این ردیف برای نمایش کامل پپ‌ها و امن‌ها
+    game["revealed_rows"][stg] = row_data
     is_poop = row_data[col] == 1
 
     if is_poop:
         game["history"][stg] = "💩"
         pipe_str = "".join(game["history"])
-        # ردیف‌های باقی‌مانده رو هم باز کنیم تا کل جدول دیده بشه
         for r in range(5):
             if r not in game["revealed_rows"]:
                 game["revealed_rows"][r] = game["stages"][r]
