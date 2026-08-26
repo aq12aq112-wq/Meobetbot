@@ -3,10 +3,8 @@ import asyncio
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from database import add_user, get_user, get_balance, get_referrals_count, update_balance
-from config import CARD_NUMBER, CARD_HOLDER, ADMIN_IDS
+from database import add_user, get_balance, get_referrals_count
+from config import ADMIN_IDS
 
 router = Router()
 
@@ -101,6 +99,55 @@ async def cb_help(callback: CallbackQuery):
     )
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await callback.answer()
+
+@router.callback_query(F.data == "trade_menu")
+async def cb_trade(callback: CallbackQuery):
+    text = "📈 **بخش ترید و پیش‌بینی بازار**\n\nبه زودی فعال خواهد شد!"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت", callback_data="main_menu")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await callback.answer()
+
+# ---------- پنل مدیریت ----------
+@router.callback_query(F.data == "admin_panel")
+async def cb_admin_panel(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("❌ دسترسی ندارید!", show_alert=True)
+        return
+        
+    text = "⚙️ **پنل مدیریت پیشرفته میوبت**\n\nگزینه مورد نظر را انتخاب کنید:"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 آمار کلی ربات", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
+    ])
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await callback.answer()
+
+@router.callback_query(F.data == "admin_stats")
+async def cb_admin_stats(callback: CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        await callback.answer("دسترسی ندارید!", show_alert=True)
+        return
+        
+    import aiosqlite
+    from config import DB_PATH
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cursor:
+            users_count = (await cursor.fetchone())[0]
+        async with db.execute("SELECT SUM(balance) FROM users") as cursor:
+            total_balance = (await cursor.fetchone())[0] or 0.0
+            
+    text = (
+        f"📊 **آمار سیستم میوبت**\n\n"
+        f"👥 کل کاربران: **{users_count} نفر**\n"
+        f"💰 مجموع موجودی میو کاربران: **{total_balance:,.0f} میو**"
+    )
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 بازگشت به پنل", callback_data="admin_panel")]
     ])
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await callback.answer()
