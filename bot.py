@@ -3,12 +3,15 @@ import logging
 import sys
 import random
 from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
 # تنظیمات پایه
 BOT_TOKEN = "8807018385:AAH0BJOhINR_TqpU0i_3b29QGWOlL5QUL2M"
 ADMIN_CARD = "760188800770"
 ADMIN_ID = 6937799221
+
+MIN_LIMIT = 50000  # حداقل شارژ و برداشت
+MIN_BET = 20000    # حداقل مبلغ بازی
 
 # دیتابیس مقاوم
 import aiosqlite
@@ -41,8 +44,10 @@ async def update_balance(user_id: int, amount: float):
         await db.commit()
 
 router = Router()
+active_charge_states = {}
+active_withdraw_states = {}
+active_dice_games = {}
 active_pop_games = {}
-active_charge_requests = {}
 
 def parse_amount(val_str: str) -> float:
     val_str = val_str.lower().replace("کی", "k").replace("میو", "").replace(",", "").strip()
@@ -50,7 +55,6 @@ def parse_amount(val_str: str) -> float:
         return float(val_str.replace("k", "")) * 1000
     return float(val_str)
 
-# کیبورد اصلی شیشه‌ای
 def get_main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="👤 حساب کاربری و موجودی", callback_data="menu_profile")],
@@ -61,121 +65,305 @@ def get_main_menu():
         [InlineKeyboardButton(text="📖 راهنمای بازی‌ها", callback_data="menu_help")]
     ])
 
-# 1. دستور استارت
 @router.message(F.text.in_({"/start", "استارت", "منو"}))
 async def cmd_start(message: Message):
     await message.reply(
-        "Meowie bet🐱\n\n"
-        "از کازینو با ربات میویی خسته شدی؟ میتونی با میوبت تک... فرست (نه فوروارد!).",
-        reply_markup=get_main_menu(),
-        parse_mode="Markdown"
+        "Meowie bet🐱\n\nاز کازینو با ربات میویی خسته شدی؟ میتونی با میوبت شرط ببندی!",
+        reply_markup=get_main_menu(), parse_mode="Markdown"
     )
 
 @router.callback_query(F.data.startswith("menu_"))
-async def handle_menu_callbacks(callback: CallbackQuery):
+async def handle_menu(callback: CallbackQuery):
     action = callback.data.split("_")[1]
     user_id = callback.from_user.id
 
     if action == "profile":
         bal = await get_balance(user_id)
-        text = f"👤 **حساب کاربری شما:**\n\n🆔 آیدی: `{user_id}`\n💳 موجودی: `{bal:,.0f} میو`"
-        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+        text = f"👤 **حساب کاربری:**\n🆔 آیدی: `{user_id}`\n💳 موجودی: `{bal:,.0f} میو`"
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_back")]])
         await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
 
     elif action == "charge":
-        active_charge_requests[user_id] = "awaiting_amount"
+        active_charge_states[user_id] = "awaiting_amount"
         markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ لغو", callback_data="menu_back")]])
         await callback.message.edit_text(
-            "💰 **شارژ موجودی**\n\nمبلغ شارژت رو به عدد بفرست، مثلاً: `50000` یا `500k`",
+            f"💰 **شارژ موجودی**\n\nحداقل مبلغ شارژ `{MIN_LIMIT:,.0f} میو` است.\nمبلغ مورد نظر را ارسال کنید:",
             reply_markup=markup, parse_mode="Markdown"
         )
 
     elif action == "withdraw":
-        text = "💵 برای برداشت موجودی، مقدار و شماره کارت خود را برای ادمین ارسال کنید."
-        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
-        await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        active_withdraw_states[user_id] = {"step": "awaiting_card"}
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ لغو", callback_data="menu_back")]])
+        await callback.message.edit_text(
+            "💵 **برداشت وجه**\n\nابتدا **شماره کارت** بانکی خود را ارسال کنید:",
+            reply_markup=markup, parse_mode="Markdown"
+        )
 
     elif action == "help":
         text = (
-            "📖 **راهنمای جامع بازی‌های میوبت:**\n\n"
-            "• **پوپ:** `#پوپ [مبلغ]` (مثل `#پوپ 20k`)\n"
-            "• شارژ حساب از منوی شیشه‌ای\n"
-            "• انتقال موجودی: `#انتقال [مبلغ] [آیدی]`"
+            "📖 **راهنمای بازی‌ها:**\n\n"
+            "• تاس: `#زوج [مبلغ]` یا `#فرد [مبلغ]` (حداقل مبلغ 20,000)\n"
+            "• پوپ: `#پوپ [مبلغ]` (حداقل مبلغ 20,000)\n"
+            "• حداقل شارژ و برداشت: ۵۰,۰۰۰ میو"
         )
-        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت به منو", callback_data="menu_back")]])
+        markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 بازگشت", callback_data="menu_back")]])
         await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
 
     elif action == "back":
         await callback.message.edit_text(
-            "Meowie bet🐱\n\nاز کازینو با ربات میویی خسته شدی؟ میتونی با میوبت...",
+            "Meowie bet🐱\n\nاز کازینو با ربات میویی خسته شدی؟ میتونی با میوبت شرط ببندی!",
             reply_markup=get_main_menu(), parse_mode="Markdown"
         )
     await callback.answer()
 
-# 2. مکانیزم شارژ حساب (کارت به کارت)
+# --- مکانیزم شارژ و برداشت ---
 @router.message(F.text & ~F.text.startswith("#"))
-async def handle_text_messages(message: Message):
+async def handle_text_inputs(message: Message):
     user_id = message.from_user.id
-    if user_id in active_charge_requests and active_charge_requests[user_id] == "awaiting_amount":
-        try:
-            amount = parse_amount(message.text)
-        except ValueError:
-            return await message.reply("⚠️ مبلغ نامعتبر است. لطفاً فقط عدد یا به صورت 50k وارد کنید.")
+    
+    if user_id in active_charge_states:
+        state = active_charge_states[user_id]
+        if state == "awaiting_amount":
+            try:
+                amount = parse_amount(message.text)
+            except ValueError:
+                return await message.reply("⚠️ مبلغ نامعتبر است.")
+            
+            if amount < MIN_LIMIT:
+                return await message.reply(f"❌ حداقل مبلغ شارژ {MIN_LIMIT:,.0f} میو است.")
+            
+            active_charge_states[user_id] = {"step": "awaiting_receipt", "amount": amount}
+            await message.reply(
+                f"Meowie bet🐱\n┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
+                f"💳 **به کارت زیر واریز کنید:**\n`{ADMIN_CARD}`\n\n"
+                f"💰 مبلغ: `{amount:,.0f} میو`\n\n"
+                f"📸 بعد از واریز، رسید رو همینجا بفرست.",
+                parse_mode="Markdown"
+            )
+            return
 
-        del active_charge_requests[user_id]
-        receipt_id = f"{random.randint(100000, 999999)}#{random.choice(['eed', 'abc', 'xyz'])}"
-        
-        text = (
-            f"🐱 کارت به کارت میویی 💳\n"
-            f"┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
-            f"💳 **به کارت زیر واریز کن:**\n`{ADMIN_CARD}`\n\n"
-            f"💰 مبلغ: `{amount:,.0f} میو`\n\n"
-            f"بعد از واریز، رسید رو همینجا بفرست."
-        )
-        
-        # دکمه تایید ادمین برای شارژ آنی
+    if user_id in active_withdraw_states:
+        data = active_withdraw_states[user_id]
+        if data["step"] == "awaiting_card":
+            card_num = message.text.strip()
+            active_withdraw_states[user_id] = {"step": "awaiting_amount", "card": card_num}
+            await message.reply("💵 مبلغ مورد نظر برای برداشت را وارد کنید (حداقل ۵۰,۰۰۰ میو):", parse_mode="Markdown")
+            return
+        elif data["step"] == "awaiting_amount":
+            try:
+                amount = parse_amount(message.text)
+            except ValueError:
+                return await message.reply("⚠️ مبلغ نامعتبر است.")
+            
+            if amount < MIN_LIMIT:
+                return await message.reply(f"❌ حداقل مبلغ برداشت {MIN_LIMIT:,.0f} میو است.")
+            
+            bal = await get_balance(user_id)
+            if bal < amount:
+                return await message.reply(f"❌ موجودی شما کافی نیست! موجودی: {bal:,.0f} میو")
+            
+            card = data["card"]
+            del active_withdraw_states[user_id]
+            
+            admin_markup = InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ تأیید برداشت", callback_data=f"adm_w_acc_{user_id}_{int(amount)}"),
+                    InlineKeyboardButton(text="❌ رد برداشت", callback_data=f"adm_w_rej_{user_id}")
+                ]
+            ])
+            await message.reply("⏳ درخواست برداشت شما ثبت شد و در صف بررسی مدیر قرار گرفت.", parse_mode="Markdown")
+            try:
+                await message.bot.send_message(
+                    ADMIN_ID,
+                    f"📤 **درخواست برداشت جدید:**\n👤 کاربر: `{user_id}`\n💳 کارت: `{card}`\n💰 مبلغ: `{amount:,.0f} میو`",
+                    reply_markup=admin_markup, parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+            return
+
+@router.message(F.photo)
+async def handle_receipt_photo(message: Message):
+    user_id = message.from_user.id
+    if user_id in active_charge_states and isinstance(active_charge_states[user_id], dict):
+        data = active_charge_states[user_id]
+        amount = data["amount"]
+        del active_charge_states[user_id]
+
         admin_markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ تأیید و واریز به حساب", callback_data=f"admin_approve_{user_id}_{int(amount)}")]
+            [
+                InlineKeyboardButton(text="✅ تأیید شارژ", callback_data=f"adm_c_acc_{user_id}_{int(amount)}"),
+                InlineKeyboardButton(text="❌ رد رسید", callback_data=f"adm_c_rej_{user_id}")
+            ]
         ])
-        
-        await message.reply(text, reply_markup=admin_markup, parse_mode="Markdown")
-        
-        # ارسال گزارش به ادمین
+        await message.reply("⏳ درخواست شارژ شما ثبت شد و در صف بررسی قرار گرفت.", parse_mode="Markdown")
         try:
-            await message.bot.send_message(
+            await message.bot.send_photo(
                 ADMIN_ID,
-                f"📥 **درخواست شارژ جدید:**\n👤 کاربر: `{user_id}`\n💰 مبلغ: `{amount:,.0f} میو`\n📌 شناسه: `{receipt_id}`",
+                photo=message.photo[-1].file_id,
+                caption=f"📥 **رسید شارژ جدید:**\n👤 کاربر: `{user_id}`\n💰 مبلغ: `{amount:,.0f} میو`",
                 reply_markup=admin_markup, parse_mode="Markdown"
             )
         except Exception:
             pass
 
-@router.callback_query(F.data.startswith("admin_approve_"))
-async def admin_approve_charge(callback: CallbackQuery):
+@router.callback_query(F.data.startswith("adm_"))
+async def admin_decision(callback: CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
-        return await callback.answer("❌ دسترسی غیرمجاز!", show_alert=True)
+        return await callback.answer("❌ دسترسی ندارید!", show_alert=True)
     
     parts = callback.data.split("_")
-    target_user_id = int(parts[2])
-    amount = float(parts[3])
+    action_type = parts[1]
+    status = parts[2]
+    target_user_id = int(parts[3])
 
-    await update_balance(target_user_id, amount)
-    await callback.message.edit_text(f"✅ پرداخت تأیید شد.\n💰 `{amount:,.0f} میو` به حساب کاربر واریز شد.", parse_mode="Markdown")
+    if action_type == "c":
+        if status == "acc":
+            amount = float(parts[4])
+            await update_balance(target_user_id, amount)
+            await callback.message.edit_caption(caption=f"✅ شارژ تأیید شد.\n💰 `{amount:,.0f} میو` واریز شد.")
+            try:
+                await callback.bot.send_message(target_user_id, f"✅ پرداخت شما تأیید شد.\n💰 مبلغ `{amount:,.0f} میو` به موجودی اضافه شد.", parse_mode="Markdown")
+            except Exception:
+                pass
+        else:
+            await callback.message.edit_caption(caption="❌ رسید شارژ رد شد.")
+            try:
+                await callback.bot.send_message(target_user_id, "❌ رسید واریز شما توسط مدیر رد شد.", parse_mode="Markdown")
+            except Exception:
+                pass
+    elif action_type == "w":
+        if status == "acc":
+            amount = float(parts[4])
+            bal = await get_balance(target_user_id)
+            if bal >= amount:
+                await update_balance(target_user_id, -amount)
+                await callback.message.edit_text(text="✅ برداشت تأیید و از حساب کاربر کسر شد.")
+                try:
+                    await callback.bot.send_message(target_user_id, f"✅ درخواست برداشت شما به مبلغ `{amount:,.0f} میو` تأیید شد.", parse_mode="Markdown")
+                except Exception:
+                    pass
+            else:
+                await callback.message.edit_text(text="⚠️ موجودی کاربر کافی نبود!")
+        else:
+            await callback.message.edit_text(text="❌ درخواست برداشت رد شد.")
+            try:
+                await callback.bot.send_message(target_user_id, "❌ درخواست برداشت شما توسط مدیر رد شد.", parse_mode="Markdown")
+            except Exception:
+                pass
+    await callback.answer()
+
+
+# --- بازی تاس (عیناً مشابه عکس‌های مرجع با دکمه لغو شرط) ---
+@router.message(F.text.regexp(r"^#(زوج|فرد)\s+(.+)$"))
+async def start_dice_game(message: Message):
+    if message.chat.type == "private":
+        return await message.reply("❌ بازی تاس فقط در گروه‌ها قابل اجراست!")
+    
+    parts = message.text.replace("#", "").split()
+    choice = parts[0]
     try:
-        await callback.bot.send_message(target_user_id, f"✅ شارژ حساب شما به مبلغ `{amount:,.0f} میو` با موفقیت تأیید و واریز شد!", parse_mode="Markdown")
-    except Exception:
-        pass
+        amount = parse_amount(parts[1])
+    except ValueError:
+        return await message.reply("⚠️ مبلغ نامعتبر است.")
+
+    if amount < MIN_BET:
+        return await message.reply(f"❌ حداقل مبلغ شرط‌بندی {MIN_BET:,.0f} میو است.")
+
+    user_id = message.from_user.id
+    bal = await get_balance(user_id)
+    if bal < amount:
+        return await message.reply(f"❌ موجودی کافی نیست! موجودی: {bal:,.0f} میو")
+
+    await update_balance(user_id, -amount)
+    active_dice_games[user_id] = {"choice": choice, "amount": amount, "rolls": []}
+
+    cancel_markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="❌ لغو شرط", callback_data=f"dice_cancel_{user_id}")]
+    ])
+
+    text = (
+        f"Meowie bet🐱\n┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
+        f"🎰 شرط ثبت شد\n\n"
+        f"👤 {message.from_user.mention_html()}\n\n"
+        f"🎯 شرط: «{choice}»\n"
+        f"💰 مبلغ: `{amount:,.0f} میو`\n\n"
+        f"🎲 لطفاً ۳ تاس بیندازید...\n"
+        f"⏳ فقط ۶۰ ثانیه وقت داری، وگرنه ۵۰% مبلغ به عنوان جریمه کسر میشه."
+    )
+    await message.reply(text, reply_markup=cancel_markup, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("dice_cancel_"))
+async def cancel_dice_game(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    target_user_id = int(callback.data.split("_")[2])
+    
+    if user_id != target_user_id:
+        return await callback.answer("❌ این دکمه برای شما نیست!", show_alert=True)
+    
+    if user_id in active_dice_games:
+        game = active_dice_games.pop(user_id)
+        await update_balance(user_id, game["amount"]) # بازگشت پول بدون جریمه قبل از اولین تاس
+        await callback.message.edit_text("❌ شرط شما لغو شد و مبلغ به حسابتان برگشت.")
+    else:
+        await callback.answer("⚠️ این شرط قبلاً انجام شده یا منقضی شده است.", show_alert=True)
+
+@router.message(F.dice)
+async def handle_dice_roll(message: Message):
+    user_id = message.from_user.id
+    if user_id not in active_dice_games or not message.dice:
+        return
+
+    game = active_dice_games[user_id]
+    game["rolls"].append(message.dice.value)
+
+    if len(game["rolls"]) < 3:
+        await message.reply(f"🎲 تاس {len(game['rolls'])} ثبت شد. {3 - len(game['rolls'])} تاس دیگر بفرستید.")
+    else:
+        total = sum(game["rolls"])
+        is_even = total % 2 == 0
+        won = (game["choice"] == "زوج" and is_even) or (game["choice"] == "فرد" and not is_even)
+        rolls_list = game["rolls"]
+
+        new_bal = await get_balance(user_id)
+        if won:
+            prize = game["amount"] * 1.5  # ضریب ۱.۵
+            await update_balance(user_id, prize)
+            new_bal = await get_balance(user_id)
+            result_text = (
+                f"Meowie bet🐱\n┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
+                f"👤 {message.from_user.mention_html()}\n"
+                f"🎲 تاس‌ها: `{rolls_list}`\n"
+                f"🎉 مجموع: `{total} ({game['choice']})`\n"
+                f"🎉 احسنت! برنده شدی.\n"
+                f"💰 جایزه: `{prize:,.0f} میو`\n"
+                f"🆕 موجودی جدید: `{new_bal:,.0f} میو`"
+            )
+        else:
+            result_text = (
+                f"Meowie bet🐱\n┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
+                f"👤 {message.from_user.mention_html()}\n"
+                f"🎲 تاس‌ها: `{rolls_list}`\n"
+                f"😔 مجموع: `{total} ({'زوج' if is_even else 'فرد'})`\n"
+                f"💥 باختی! خداحافظ.\n"
+                f"🆕 موجودی جدید: `{new_bal:,.0f} میو`"
+            )
+        await message.reply(result_text, parse_mode="HTML")
+        del active_dice_games[user_id]
 
 
-# 3. بازی پوپ حرفه‌ای (دقیقاً مشابه عکس‌ها)
+# --- بازی پوپ حرفه‌ای ---
 @router.message(F.text.regexp(r"^(?:#)?پوپ\s+(.+)$"))
-async def ask_pop(message: Message):
+async def start_pop_game(message: Message):
     if message.chat.type == "private":
         return await message.reply("❌ بازی پوپ فقط در گروه قابل اجراست!")
     try:
         amount = parse_amount(message.text.replace("#", "").split()[1])
     except ValueError:
         return await message.reply("⚠️ مبلغ نامعتبر.")
+
+    if amount < MIN_BET:
+        return await message.reply(f"❌ حداقل مبلغ شرط‌بندی {MIN_BET:,.0f} میو است.")
 
     user_id = message.from_user.id
     if await get_balance(user_id) < amount:
@@ -189,10 +377,8 @@ async def ask_pop(message: Message):
     ])
     
     text = (
-        f"Meowie bet🐱\n"
-        f"┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
-        f"💩 **بازی پوپ**\n"
-        f"👤 بازیکن: {message.from_user.mention_html()}\n\n"
+        f"Meowie bet🐱\n┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
+        f"💩 **بازی پوپ**\n👤 بازیکن: {message.from_user.mention_html()}\n\n"
         f"💰 مبلغ شرط: `{amount:,.0f} میو`\n"
         f"📊 ۵ مرحله، هر مرحله ۴ خانه\n"
         f"💩 خانه‌های پوپ رو نزن!\n\n"
@@ -207,7 +393,7 @@ async def cancel_pop(callback: CallbackQuery):
     await callback.message.edit_text("❌ بازی لغو شد.")
 
 @router.callback_query(F.data.startswith("pop_start_"))
-async def start_pop(callback: CallbackQuery):
+async def pop_begin(callback: CallbackQuery):
     parts = callback.data.split("_")
     owner_id, amount = int(parts[2]), float(parts[3])
     if callback.from_user.id != owner_id:
@@ -233,8 +419,7 @@ async def render_pop(message: Message, user_id: int, is_edit=False):
     curr_prize = bet * game["multipliers"][stage - 1] if stage > 0 else bet
 
     text = (
-        f"Meowie bet🐱\n"
-        f"┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
+        f"Meowie bet🐱\n┗‌روبوت ۲ 🎰 میوبت 🏛\n\n"
         f"💩 پوپ — 👤 بازیکن\n"
         f"🎮 مرحله {stage+1} از ۵\n"
         f"💰 شرط: `{bet:,.0f} میو`\n"
@@ -242,7 +427,6 @@ async def render_pop(message: Message, user_id: int, is_edit=False):
     )
 
     keyboard = []
-    # ردیف‌ها از پایین به بالا یا بالا به پایین طبق استاندارد
     for r in range(5):
         row_btns = []
         for c in range(4):
@@ -263,10 +447,10 @@ async def render_pop(message: Message, user_id: int, is_edit=False):
     else: await message.reply(text, reply_markup=markup, parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("pop_click_"))
-async def click_pop(callback: CallbackQuery):
+async def pop_click(callback: CallbackQuery):
     parts = callback.data.split("_")
     owner_id, stg, col = int(parts[2]), int(parts[3]), int(parts[4])
-    if callback.from_user.id != owner_id: return await callback.answer("❌ این بازی شما نیست!", show_alert=True)
+    if callback.from_user.id != owner_id: return await callback.answer("❌ خطا", show_alert=True)
 
     game = active_pop_games.get(owner_id)
     if not game or game["current_stage"] != stg: return
@@ -274,10 +458,9 @@ async def click_pop(callback: CallbackQuery):
     row_data = game["stages"][stg]
     game["revealed_rows"][stg] = row_data
     if row_data[col] == 1:
-        # باخت
         for r in range(5): game["revealed_rows"][r] = game["stages"][r]
         await render_pop(callback.message, owner_id, is_edit=True)
-        await callback.message.answer("💥 به پوپ خوردی و باختی!")
+        await callback.message.answer("💥 به پوپ خوردی! باختی.")
         del active_pop_games[owner_id]
     else:
         game["current_stage"] += 1
@@ -286,35 +469,7 @@ async def click_pop(callback: CallbackQuery):
             await update_balance(owner_id, prize)
             for r in range(5): game["revealed_rows"][r] = game["stages"][r]
             await render_pop(callback.message, owner_id, is_edit=True)
-            await callback.message.answer(f"🏆 برنده نهایی! جایزه: `{prize:,.0f} میو`", parse_mode="Markdown")
-            del active_pop_games[owner_id]
+            await callback.message.answer(f"🏆 برنده نهایی شدی!\n💰 جایزه: `{prize:,.0f} میو`", parse_mode="Markdown")
+            del active_pop_games.get(owner_id, None)
         else:
-            await render_pop(callback.message, owner_id, is_edit=True)
-
-@router.callback_query(F.data.startswith("pop_cash_"))
-async def cash_pop(callback: CallbackQuery):
-    owner_id = int(callback.data.split("_")[2])
-    if callback.from_user.id != owner_id: return
-    game = active_pop_games.pop(owner_id, None)
-    if not game: return
-    prize = game["bet"] * game["multipliers"][game["current_stage"] - 1]
-    await update_balance(owner_id, prize)
-    for r in range(5): game["revealed_rows"][r] = game["stages"][r]
-    await render_pop(callback.message, owner_id, is_edit=True)
-    await callback.message.answer(f"💵 برداشت موفق!\n💰 جایزه: `{prize:,.0f} میو`", parse_mode="Markdown")
-
-# اجرای ربات
-async def main():
-    await init_db()
-    bot = Bot(token=BOT_TOKEN)
-    dp = Dispatcher()
-    dp.include_router(router)
-
-    await bot.delete_webhook(drop_pending_updates=True)
-    print("🤖 MeowBet Pro Bot is running smoothly!")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    asyncio.run(main())
-
+            await render_pop(ca
