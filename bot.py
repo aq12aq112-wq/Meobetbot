@@ -10,10 +10,9 @@ BOT_TOKEN = "8807018385:AAH0BJOhINR_TqpU0i_3b29QGWOlL5QUL2M"
 ADMIN_CARD = "760188800770"
 ADMIN_ID = 6937799221
 
-MIN_LIMIT = 50000  # حداقل شارژ و برداشت
-MIN_BET = 20000    # حداقل مبلغ بازی
+MIN_LIMIT = 50000
+MIN_BET = 20000
 
-# دیتابیس مقاوم
 import aiosqlite
 DB_PATH = "bot_database.db"
 
@@ -116,7 +115,6 @@ async def handle_menu(callback: CallbackQuery):
         )
     await callback.answer()
 
-# --- مکانیزم شارژ و برداشت ---
 @router.message(F.text & ~F.text.startswith("#"))
 async def handle_text_inputs(message: Message):
     user_id = message.from_user.id
@@ -253,8 +251,6 @@ async def admin_decision(callback: CallbackQuery):
                 pass
     await callback.answer()
 
-
-# --- بازی تاس (عیناً مشابه عکس‌های مرجع با دکمه لغو شرط) ---
 @router.message(F.text.regexp(r"^#(زوج|فرد)\s+(.+)$"))
 async def start_dice_game(message: Message):
     if message.chat.type == "private":
@@ -303,7 +299,7 @@ async def cancel_dice_game(callback: CallbackQuery):
     
     if user_id in active_dice_games:
         game = active_dice_games.pop(user_id)
-        await update_balance(user_id, game["amount"]) # بازگشت پول بدون جریمه قبل از اولین تاس
+        await update_balance(user_id, game["amount"])
         await callback.message.edit_text("❌ شرط شما لغو شد و مبلغ به حسابتان برگشت.")
     else:
         await callback.answer("⚠️ این شرط قبلاً انجام شده یا منقضی شده است.", show_alert=True)
@@ -327,7 +323,7 @@ async def handle_dice_roll(message: Message):
 
         new_bal = await get_balance(user_id)
         if won:
-            prize = game["amount"] * 1.5  # ضریب ۱.۵
+            prize = game["amount"] * 1.5
             await update_balance(user_id, prize)
             new_bal = await get_balance(user_id)
             result_text = (
@@ -351,8 +347,6 @@ async def handle_dice_roll(message: Message):
         await message.reply(result_text, parse_mode="HTML")
         del active_dice_games[user_id]
 
-
-# --- بازی پوپ حرفه‌ای ---
 @router.message(F.text.regexp(r"^(?:#)?پوپ\s+(.+)$"))
 async def start_pop_game(message: Message):
     if message.chat.type == "private":
@@ -470,6 +464,12 @@ async def pop_click(callback: CallbackQuery):
             for r in range(5): game["revealed_rows"][r] = game["stages"][r]
             await render_pop(callback.message, owner_id, is_edit=True)
             await callback.message.answer(f"🏆 برنده نهایی شدی!\n💰 جایزه: `{prize:,.0f} میو`", parse_mode="Markdown")
-            del active_pop_games.get(owner_id, None)
+            del active_pop_games[owner_id]
         else:
-            await render_pop(ca
+            await render_pop(callback.message, owner_id, is_edit=True)
+
+@router.callback_query(F.data.startswith("pop_cash_"))
+async def pop_cash(callback: CallbackQuery):
+    owner_id = int(callback.data.split("_")[2])
+    if callback.from_user.id != owner_id: return
+    game
